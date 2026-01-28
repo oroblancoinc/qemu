@@ -138,6 +138,24 @@ jobs:
         run: |
           ninja -C build install
 
+      - name: Bundle Windows DLLs (${{ matrix.target }} @ ${{ matrix.platform }})
+        if : ${{ matrix.platform == 'x86_64-w64-mingw32' }}
+        run: |
+          ./.github/workflows/scripts/bundle-win-dlls.sh install/qemu/bin
+
+      - name: Verify Windows binary starts (${{ matrix.target }} @ ${{ matrix.platform }})
+        if : ${{ matrix.platform == 'x86_64-w64-mingw32' }}
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          # Extract architecture from target (e.g., "xtensa" from "xtensa-softmmu")
+          ARCH="${TARGET%-softmmu}"
+          QEMU_EXE="install/qemu/bin/qemu-system-${ARCH}.exe"
+          echo "Testing: ${QEMU_EXE}"
+          # Run the binary with --version to verify it starts without missing DLLs
+          "${QEMU_EXE}" --version
+          echo "Binary verification successful - no missing DLLs"
+
       - name: Package (${{ matrix.target }} @ ${{ matrix.platform }})
         env:
           VERSION: ${{ needs.Vars.outputs.VERSION }}

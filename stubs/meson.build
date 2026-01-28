@@ -77,6 +77,10 @@ if have_system
   stub_ss.add(files('xen-hw-stub.c'))
 endif
 
+if host_os == 'windows'
+  stub_ss.add(files('ftruncate-win32.c'))
+endif
+
 if have_system or have_user
   stub_ss.add(files('gdbstub.c'))
 
