@@ -51,6 +51,7 @@
 #include "hw/misc/esp32c3_jtag.h"
 #include "hw/dma/esp32c3_gdma.h"
 #include "hw/audio/esp32c3_i2s.h"
+#include "hw/i2c/esp32c3_i2c.h"
 #include "hw/display/esp_rgb.h"
 #include "hw/net/can/esp32c3_twai.h"
 
@@ -95,6 +96,7 @@ struct Esp32C3MachineState {
     ESPRgbState rgb;
     Esp32C3TWAIState twai;
     Esp32C3I2SState i2s0;
+    Esp32C3I2CState i2c0;
 
     /* SD card ssi-sd device for GPIO CS routing */
     DeviceState *sd_ssi_dev;
@@ -444,6 +446,7 @@ static void esp32c3_machine_init(MachineState *machine)
     object_initialize_child(OBJECT(machine), "rgb", &ms->rgb, TYPE_ESP_RGB);
     object_initialize_child(OBJECT(machine), "twai", &ms->twai, TYPE_ESP32C3_TWAI);
     object_initialize_child(OBJECT(machine), "i2s0", &ms->i2s0, TYPE_ESP32C3_I2S);
+    object_initialize_child(OBJECT(machine), "i2c0", &ms->i2c0, TYPE_ESP32C3_I2C);
 
     /* Realize all the I/O peripherals we depend on */
 
@@ -665,6 +668,15 @@ static void esp32c3_machine_init(MachineState *machine)
         /* The C3 has a single I2S; its interrupt source is named I2S1 in the matrix. */
         sysbus_connect_irq(SYS_BUS_DEVICE(&ms->i2s0), 0,
                            qdev_get_gpio_in(intmatrix_dev, ETS_I2S1_INTR_SOURCE));
+    }
+
+    /* I2C0 realization */
+    {
+        sysbus_realize(SYS_BUS_DEVICE(&ms->i2c0), &error_fatal);
+        MemoryRegion *mr = sysbus_mmio_get_region(SYS_BUS_DEVICE(&ms->i2c0), 0);
+        memory_region_add_subregion_overlap(sys_mem, DR_REG_I2C_EXT_BASE, mr, 0);
+        sysbus_connect_irq(SYS_BUS_DEVICE(&ms->i2c0), 0,
+                           qdev_get_gpio_in(intmatrix_dev, ETS_I2C_EXT0_INTR_SOURCE));
     }
 
     /* SHA realization */
