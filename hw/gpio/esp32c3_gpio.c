@@ -28,9 +28,39 @@
 #define GPIO_ENABLE_W1TC    0x28
 #define GPIO_STRAP_REG      0x38
 #define GPIO_IN_REG         0x3C
+#define GPIO_FUNC_IN_SEL_CFG_FIRST  0x154
+#define GPIO_FUNC_IN_SEL_CFG_LAST   \
+    (GPIO_FUNC_IN_SEL_CFG_FIRST + (ESP32C3_GPIO_SIG_COUNT - 1) * 4)
+
+/*
+ * GPIO_FUNCn_IN_SEL_CFG: IN_SEL is [4:0], IN_INV_SEL is bit 5 and SIG_IN_SEL
+ * (bit 6) selects the GPIO matrix over the direct IOMUX connection. The pad
+ * numbers 0x1e and 0x1f stand for constant one and constant zero rather than
+ * a pad, and are rejected by the ESP32C3_GPIO_COUNT bound below.
+ */
+#define GPIO_FUNC_IN_SEL_MASK   0x1f
+#define GPIO_FUNC_SIG_IN_SEL    (1 << 6)
 
 /* Debug output */
 #define GPIO_DEBUG 0
+
+int esp32c3_gpio_signal_pad(ESP32C3GPIOState *s, unsigned sig)
+{
+    if (sig >= ESP32C3_GPIO_SIG_COUNT) {
+        return -1;
+    }
+
+    uint32_t cfg = s->func_in_sel_cfg[sig];
+
+    if (!(cfg & GPIO_FUNC_SIG_IN_SEL)) {
+        /* Signal is not routed through the matrix */
+        return -1;
+    }
+    if ((cfg & GPIO_FUNC_IN_SEL_MASK) >= ESP32C3_GPIO_COUNT) {
+        return -1;
+    }
+    return cfg & GPIO_FUNC_IN_SEL_MASK;
+}
 
 static void esp32c3_gpio_update_outputs(ESP32C3GPIOState *s, uint32_t old_out)
 {
@@ -66,6 +96,9 @@ static uint64_t esp32c3_gpio_read(void *opaque, hwaddr addr, unsigned int size)
     case GPIO_IN_REG:
         /* Return output values as input (loopback for now) */
         r = s->gpio_out;
+        break;
+    case GPIO_FUNC_IN_SEL_CFG_FIRST ... GPIO_FUNC_IN_SEL_CFG_LAST:
+        r = s->func_in_sel_cfg[(addr - GPIO_FUNC_IN_SEL_CFG_FIRST) / 4];
         break;
     default:
         /* Many other GPIO registers exist; return 0 for now */
@@ -113,6 +146,13 @@ static void esp32c3_gpio_write(void *opaque, hwaddr addr,
     case GPIO_ENABLE_W1TC:
         s->gpio_enable &= ~(value & ((1 << ESP32C3_GPIO_COUNT) - 1));
         break;
+    case GPIO_FUNC_IN_SEL_CFG_FIRST ... GPIO_FUNC_IN_SEL_CFG_LAST:
+        /*
+         * The signal routing itself is not simulated, but peripherals need to
+         * be able to tell which pads they are currently wired to.
+         */
+        s->func_in_sel_cfg[(addr - GPIO_FUNC_IN_SEL_CFG_FIRST) / 4] = value;
+        break;
     default:
         /* Many other GPIO registers exist; ignore for now */
         break;
@@ -131,6 +171,7 @@ static void esp32c3_gpio_reset_hold(Object *obj, ResetType type)
 
     s->gpio_out = 0;
     s->gpio_enable = 0;
+    memset(s->func_in_sel_cfg, 0, sizeof(s->func_in_sel_cfg));
 
     /* Notify all outputs are now low */
     for (int i = 0; i < ESP32C3_GPIO_COUNT; i++) {

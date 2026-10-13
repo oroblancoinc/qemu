@@ -18,6 +18,9 @@
 /* Number of GPIO pins on ESP32-C3 */
 #define ESP32C3_GPIO_COUNT 22
 
+/* Number of peripheral input signals the GPIO matrix can route */
+#define ESP32C3_GPIO_SIG_COUNT 256
+
 /* GPIO output IRQ name for connecting to external devices */
 #define ESP32C3_GPIO_OUT_IRQ "esp32c3-gpio-out"
 
@@ -28,9 +31,18 @@ typedef struct ESP32C3GPIOState {
     uint32_t gpio_out;
     uint32_t gpio_enable;
 
+    /* GPIO_FUNCn_IN_SEL_CFG: which pad each peripheral input signal reads */
+    uint32_t func_in_sel_cfg[ESP32C3_GPIO_SIG_COUNT];
+
     /* Output IRQs - one per GPIO pin */
     qemu_irq gpio_out_irq[ESP32C3_GPIO_COUNT];
 } ESP32C3GPIOState;
+
+/**
+ * Return the pad a peripheral input signal is currently routed to, or -1 if
+ * the signal is unrouted or tied to a constant level.
+ */
+int esp32c3_gpio_signal_pad(ESP32C3GPIOState *s, unsigned sig);
 
 typedef struct ESP32C3GPIOClass {
     Esp32GpioClass parent;

@@ -672,6 +672,9 @@ static void esp32c3_machine_init(MachineState *machine)
 
     /* I2C0 realization */
     {
+        /* Lets the controller resolve its current pads through the GPIO matrix */
+        object_property_set_link(OBJECT(&ms->i2c0), "gpio", OBJECT(&ms->gpio),
+                                 &error_abort);
         sysbus_realize(SYS_BUS_DEVICE(&ms->i2c0), &error_fatal);
         MemoryRegion *mr = sysbus_mmio_get_region(SYS_BUS_DEVICE(&ms->i2c0), 0);
         memory_region_add_subregion_overlap(sys_mem, DR_REG_I2C_EXT_BASE, mr, 0);

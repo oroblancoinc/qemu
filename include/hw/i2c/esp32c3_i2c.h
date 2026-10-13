@@ -15,6 +15,7 @@
 #include "qemu/fifo8.h"
 #include "hw/i2c/i2c.h"
 #include "hw/registerfields.h"
+#include "hw/gpio/esp32c3_gpio.h"
 
 #define TYPE_ESP32C3_I2C "esp32c3.i2c"
 #define ESP32C3_I2C(obj) OBJECT_CHECK(Esp32C3I2CState, (obj), TYPE_ESP32C3_I2C)
@@ -23,6 +24,23 @@
 #define ESP32C3_I2C_FIFO_LENGTH 32
 /* The C3 only has 8 command registers, unlike the 16 of the original ESP32 */
 #define ESP32C3_I2C_CMD_COUNT   8
+
+/*
+ * GPIO matrix input signal indices for I2C0 (soc/gpio_sig_map.h). The IDF
+ * driver routes the controller to pads with esp_rom_gpio_connect_in_signal(),
+ * so these are the signals the GPIO device must be queried with to learn
+ * which pads the controller is currently wired to.
+ */
+#define ESP32C3_I2CEXT0_SCL_IN_IDX  53
+#define ESP32C3_I2CEXT0_SDA_IN_IDX  54
+
+/*
+ * Read-only integer properties holding the pad each line is currently routed
+ * to, or -1 when unrouted. Slaves on the bus read these to decide whether
+ * they are physically wired to the lines being driven.
+ */
+#define ESP32C3_I2C_SCL_PAD_PROP    "scl-pad"
+#define ESP32C3_I2C_SDA_PAD_PROP    "sda-pad"
 
 typedef struct Esp32C3I2CState {
     SysBusDevice parent_obj;
@@ -33,6 +51,9 @@ typedef struct Esp32C3I2CState {
     Fifo8 rx_fifo;
     Fifo8 tx_fifo;
     bool trans_ongoing;
+
+    /* GPIO device used to resolve which pads the controller is routed to */
+    ESP32C3GPIOState *gpio;
 
     uint32_t ctr_reg;
     uint32_t timeout_reg;

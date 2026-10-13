@@ -16,7 +16,10 @@
 #include "qemu/log.h"
 #include "qemu/module.h"
 #include "qemu/error-report.h"
+#include "qapi/error.h"
+#include "qapi/visitor.h"
 #include "hw/i2c/esp32c3_i2c.h"
+#include "hw/qdev-properties.h"
 #include "hw/irq.h"
 
 static void esp32c3_i2c_do_transaction(Esp32C3I2CState *s);
@@ -311,6 +314,24 @@ static const MemoryRegionOps esp32c3_i2c_ops = {
     .endianness = DEVICE_LITTLE_ENDIAN,
 };
 
+/*
+ * Expose the pad each line is currently routed to, resolved through the GPIO
+ * matrix. Without a GPIO device linked, -1 is reported, which bus slaves
+ * treat as "pad unknown, respond anyway".
+ */
+static void esp32c3_i2c_get_pad(Object *obj, Visitor *v, const char *name,
+                                void *opaque, Error **errp)
+{
+    Esp32C3I2CState *s = ESP32C3_I2C(obj);
+    unsigned sig = (unsigned)(uintptr_t)opaque;
+    int64_t pad = -1;
+
+    if (s->gpio != NULL) {
+        pad = esp32c3_gpio_signal_pad(s->gpio, sig);
+    }
+    visit_type_int(v, name, &pad, errp);
+}
+
 static void esp32c3_i2c_init(Object *obj)
 {
     Esp32C3I2CState *s = ESP32C3_I2C(obj);
@@ -325,6 +346,16 @@ static void esp32c3_i2c_init(Object *obj)
 
     fifo8_create(&s->tx_fifo, ESP32C3_I2C_FIFO_LENGTH);
     fifo8_create(&s->rx_fifo, ESP32C3_I2C_FIFO_LENGTH);
+
+    object_property_add_link(obj, "gpio", TYPE_ESP32C3_GPIO,
+                             (Object **)&s->gpio,
+                             qdev_prop_allow_set_link_before_realize, 0);
+    object_property_add(obj, ESP32C3_I2C_SCL_PAD_PROP, "int",
+                        esp32c3_i2c_get_pad, NULL, NULL,
+                        (void *)(uintptr_t)ESP32C3_I2CEXT0_SCL_IN_IDX);
+    object_property_add(obj, ESP32C3_I2C_SDA_PAD_PROP, "int",
+                        esp32c3_i2c_get_pad, NULL, NULL,
+                        (void *)(uintptr_t)ESP32C3_I2CEXT0_SDA_IN_IDX);
 }
 
 static void esp32c3_i2c_class_init(ObjectClass *klass, void *data)
