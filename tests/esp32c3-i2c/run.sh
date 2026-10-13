@@ -45,8 +45,8 @@ trap 'rm -rf "$WORK"' EXIT
 # the board pad check stays out of the way -- the test pokes the controller
 # directly and never touches the GPIO matrix.
 timeout 60 "$QEMU" -nographic -machine esp32c3 -kernel "$WORK/i2ctest.elf" \
-    -device oro-i2c-chip,address=0x58,name=ioexp,regs=10=23 \
-    -device oro-i2c-chip,address=0x3a,name=leds,regs=00=18 \
+    -device oro-i2c-chip,address=0x58,name=ioexp,regs=0x10:0x23 \
+    -device oro-i2c-chip,address=0x3a,name=leds,regs=0x00:0x18 \
     > "$WORK/out.log" 2>&1 || true
 
 sed -n '/I2CTEST START/,/I2CTEST \(ALL OK\|FAILURES\)/p' "$WORK/out.log"

@@ -13,7 +13,7 @@
  * auto-increment, and reads return the register file with auto-increment.
  *
  * Instantiate one per simulated chip, e.g.
- *     -device 'oro-i2c-chip,address=0x58,name=aw9523b,regs=10=23;7f=00'
+ *     -device 'oro-i2c-chip,address=0x58,name=aw9523b,regs=0x10:0x23;0x7f:0'
  *
  * Which pads the bus is wired to is a property of the board, not of each
  * chip, so it lives on the machine ("i2c-pads") and is enforced by the
@@ -121,9 +121,34 @@ static int oro_i2c_chip_send(I2CSlave *i2c, uint8_t data)
 }
 
 /*
- * Parse the "regs" property: a list of hexadecimal "<index>=<value>" pairs,
- * e.g. "10=23;00=18". Entries are separated by ';' because a comma is
- * -device's own option separator and never reaches this property.
+ * Parse one "regs" number. A "0x"/"0X" prefix means hexadecimal, anything
+ * else decimal.
+ *
+ * Deliberately not base 0: that would also read a leading zero as octal, so
+ * "010" would quietly mean 8. In a field where both "0x00" and "00" look
+ * natural that is a trap, and it contradicts "no prefix means decimal".
+ */
+static int oro_i2c_chip_parse_num(const char *s, uint64_t *out)
+{
+    const char *body = s;
+    int base = 10;
+
+    if (body[0] == '0' && (body[1] == 'x' || body[1] == 'X')) {
+        body += 2;
+        base = 16;
+    }
+    if (body[0] == '\0') {
+        return -EINVAL;
+    }
+    return qemu_strtou64(body, NULL, base, out);
+}
+
+/*
+ * Parse the "regs" property: a list of "<index>:<value>" pairs, e.g.
+ * "0x10:0x23;0x00:0x18". Each number is hexadecimal with a "0x" prefix and
+ * decimal without, so "0x10:0x23" and "16:35" set the same register to the
+ * same value. Entries are separated by ';' because a comma is -device's own
+ * option separator and never reaches this property.
  */
 static void oro_i2c_chip_parse_regs(OroI2CChipState *s, Error **errp)
 {
@@ -135,25 +160,26 @@ static void oro_i2c_chip_parse_regs(OroI2CChipState *s, Error **errp)
 
     entries = g_strsplit(s->regs_preset, ";", -1);
     for (int i = 0; entries[i] != NULL; i++) {
-        g_auto(GStrv) pair = g_strsplit(entries[i], "=", -1);
+        g_auto(GStrv) pair = g_strsplit(entries[i], ":", -1);
         uint64_t index;
         uint64_t value;
 
         if (g_strv_length(pair) != 2) {
-            error_setg(errp, "%s: malformed regs entry '%s', "
-                       "expected <index>=<value> entries separated by ';'",
+            error_setg(errp, "%s: malformed regs entry '%s', expected "
+                       "<index>:<value> entries separated by ';' "
+                       "(0x prefix for hex, otherwise decimal)",
                        oro_i2c_chip_name(s), entries[i]);
             return;
         }
-        if (qemu_strtou64(g_strstrip(pair[0]), NULL, 16, &index) < 0 ||
+        if (oro_i2c_chip_parse_num(g_strstrip(pair[0]), &index) < 0 ||
             index >= ORO_I2C_CHIP_NREGS) {
-            error_setg(errp, "%s: invalid regs index '%s'",
+            error_setg(errp, "%s: invalid regs index '%s', expected 0..0xff",
                        oro_i2c_chip_name(s), pair[0]);
             return;
         }
-        if (qemu_strtou64(g_strstrip(pair[1]), NULL, 16, &value) ||
+        if (oro_i2c_chip_parse_num(g_strstrip(pair[1]), &value) < 0 ||
             value > 0xff) {
-            error_setg(errp, "%s: invalid regs value '%s'",
+            error_setg(errp, "%s: invalid regs value '%s', expected 0..0xff",
                        oro_i2c_chip_name(s), pair[1]);
             return;
         }
