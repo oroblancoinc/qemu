@@ -15,9 +15,9 @@
  * Instantiate one per simulated chip, e.g.
  *     -device 'oro-i2c-dev,address=0x58,name=aw9523b,regs=10=23;7f=00'
  *
- * The optional scl/sda properties pin a chip to a pair of pads, so that a
- * board whose chips sit on GPIO 6/7 does not answer a probe issued on GPIO
- * 1/2. This is what makes pad-based board discrimination testable.
+ * Which pads the bus is wired to is a property of the board, not of each
+ * chip, so it lives on the machine ("i2c-pads") and is enforced by the
+ * controller.
  */
 
 #include "qemu/osdep.h"
@@ -44,8 +44,6 @@ struct OroI2CDevState {
     /* Properties */
     char *name;
     char *regs_preset;
-    int32_t scl;
-    int32_t sda;
 
     uint8_t regs[ORO_I2C_DEV_NREGS];
     uint8_t ptr;
@@ -55,42 +53,6 @@ struct OroI2CDevState {
 static const char *oro_i2c_dev_name(OroI2CDevState *s)
 {
     return s->name ? s->name : TYPE_ORO_I2C_DEV;
-}
-
-/*
- * Decline the address match when the chip is pinned to pads the controller is
- * not currently routed to. i2c_do_start_transfer() then finds no device and
- * the controller reports a NACK, exactly as if the chip were on another bus.
- */
-static bool oro_i2c_dev_match_and_add(I2CSlave *candidate, uint8_t address,
-                                      bool broadcast,
-                                      I2CNodeList *current_devs)
-{
-    OroI2CDevState *s = ORO_I2C_DEV(candidate);
-    BusState *bus = qdev_get_parent_bus(DEVICE(candidate));
-    I2CNode *node;
-
-    if (candidate->address != address && !broadcast) {
-        return false;
-    }
-
-    if ((s->scl >= 0 || s->sda >= 0) && bus->parent != NULL) {
-        Object *ctrl = OBJECT(bus->parent);
-        int64_t scl_pad = object_property_get_int(ctrl, "scl-pad", NULL);
-        int64_t sda_pad = object_property_get_int(ctrl, "sda-pad", NULL);
-
-        if (s->scl >= 0 && scl_pad >= 0 && scl_pad != s->scl) {
-            return false;
-        }
-        if (s->sda >= 0 && sda_pad >= 0 && sda_pad != s->sda) {
-            return false;
-        }
-    }
-
-    node = g_new(struct I2CNode, 1);
-    node->elt = candidate;
-    QLIST_INSERT_HEAD(current_devs, node, next);
-    return true;
 }
 
 static int oro_i2c_dev_event(I2CSlave *i2c, enum i2c_event event)
@@ -232,8 +194,6 @@ static Property oro_i2c_dev_properties[] = {
     /* The "address" property comes from TYPE_I2C_SLAVE */
     DEFINE_PROP_STRING("name", OroI2CDevState, name),
     DEFINE_PROP_STRING("regs", OroI2CDevState, regs_preset),
-    DEFINE_PROP_INT32("scl", OroI2CDevState, scl, -1),
-    DEFINE_PROP_INT32("sda", OroI2CDevState, sda, -1),
     DEFINE_PROP_END_OF_LIST()
 };
 
@@ -248,7 +208,6 @@ static void oro_i2c_dev_class_init(ObjectClass *klass, void *data)
     device_class_set_props(dc, oro_i2c_dev_properties);
     rc->phases.hold = oro_i2c_dev_reset_hold;
 
-    sc->match_and_add = oro_i2c_dev_match_and_add;
     sc->event = oro_i2c_dev_event;
     sc->recv = oro_i2c_dev_recv;
     sc->send = oro_i2c_dev_send;

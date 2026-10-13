@@ -254,6 +254,35 @@ static void esp32c3_i2c_write(void *opaque, hwaddr addr, uint64_t value, unsigne
     }
 }
 
+/*
+ * Is the controller currently routed to the pads the simulated board's bus is
+ * wired to? Fails open in two cases that both have to keep working: no
+ * "i2c-pads" given at all, and a guest that has not routed I2C through the
+ * GPIO matrix yet (or has torn the routing down again, which
+ * i2c_common_deinit_pins() does on i2c_del_master_bus()). So the check only
+ * bites while a bus handle is open, which is when probes happen.
+ */
+static bool esp32c3_i2c_pads_match(Esp32C3I2CState *s)
+{
+    if (s->board_scl < 0 && s->board_sda < 0) {
+        return true;
+    }
+    if (s->gpio == NULL) {
+        return true;
+    }
+
+    int scl = esp32c3_gpio_signal_pad(s->gpio, ESP32C3_I2CEXT0_SCL_IN_IDX);
+    int sda = esp32c3_gpio_signal_pad(s->gpio, ESP32C3_I2CEXT0_SDA_IN_IDX);
+
+    if (s->board_scl >= 0 && scl >= 0 && scl != s->board_scl) {
+        return false;
+    }
+    if (s->board_sda >= 0 && sda >= 0 && sda != s->board_sda) {
+        return false;
+    }
+    return true;
+}
+
 static void esp32c3_i2c_do_transaction(Esp32C3I2CState *s)
 {
     bool stop_or_end = false;
@@ -277,8 +306,15 @@ static void esp32c3_i2c_do_transaction(Esp32C3I2CState *s)
                 uint8_t data = fifo8_pop(&s->tx_fifo);
                 uint8_t addr = data >> 1;
                 uint8_t is_read = data & 0x1;
-                if (i2c_start_transfer(s->bus, addr, is_read) != 0) {
-                    /* No device answered the address phase: NACK */
+                /*
+                 * Driving pads the board's bus is not wired to is
+                 * indistinguishable from an empty bus, so skip it entirely
+                 * rather than letting the slaves answer.
+                 */
+                bool nacked = !esp32c3_i2c_pads_match(s)
+                              || i2c_start_transfer(s->bus, addr, is_read) != 0;
+                if (nacked) {
+                    /* Nothing answered the address phase: NACK */
                     if (FIELD_EX32(cmd, I2C_CMD, ACK_CHECK_EN)
                         && FIELD_EX32(cmd, I2C_CMD, ACK_EXP) == 0) {
                         s->int_raw_reg = FIELD_DP32(s->int_raw_reg, I2C_INT_RAW, NACK, 1);
@@ -351,24 +387,6 @@ static const MemoryRegionOps esp32c3_i2c_ops = {
     .endianness = DEVICE_LITTLE_ENDIAN,
 };
 
-/*
- * Expose the pad each line is currently routed to, resolved through the GPIO
- * matrix. Without a GPIO device linked, -1 is reported, which bus slaves
- * treat as "pad unknown, respond anyway".
- */
-static void esp32c3_i2c_get_pad(Object *obj, Visitor *v, const char *name,
-                                void *opaque, Error **errp)
-{
-    Esp32C3I2CState *s = ESP32C3_I2C(obj);
-    unsigned sig = (unsigned)(uintptr_t)opaque;
-    int64_t pad = -1;
-
-    if (s->gpio != NULL) {
-        pad = esp32c3_gpio_signal_pad(s->gpio, sig);
-    }
-    visit_type_int(v, name, &pad, errp);
-}
-
 static void esp32c3_i2c_init(Object *obj)
 {
     Esp32C3I2CState *s = ESP32C3_I2C(obj);
@@ -387,17 +405,20 @@ static void esp32c3_i2c_init(Object *obj)
     object_property_add_link(obj, "gpio", TYPE_ESP32C3_GPIO,
                              (Object **)&s->gpio,
                              qdev_prop_allow_set_link_before_realize, 0);
-    object_property_add(obj, ESP32C3_I2C_SCL_PAD_PROP, "int",
-                        esp32c3_i2c_get_pad, NULL, NULL,
-                        (void *)(uintptr_t)ESP32C3_I2CEXT0_SCL_IN_IDX);
-    object_property_add(obj, ESP32C3_I2C_SDA_PAD_PROP, "int",
-                        esp32c3_i2c_get_pad, NULL, NULL,
-                        (void *)(uintptr_t)ESP32C3_I2CEXT0_SDA_IN_IDX);
 }
+
+static Property esp32c3_i2c_properties[] = {
+    DEFINE_PROP_INT32("board-scl", Esp32C3I2CState, board_scl, -1),
+    DEFINE_PROP_INT32("board-sda", Esp32C3I2CState, board_sda, -1),
+    DEFINE_PROP_END_OF_LIST()
+};
 
 static void esp32c3_i2c_class_init(ObjectClass *klass, void *data)
 {
+    DeviceClass *dc = DEVICE_CLASS(klass);
     ResettableClass *rc = RESETTABLE_CLASS(klass);
+
+    device_class_set_props(dc, esp32c3_i2c_properties);
     rc->phases.hold = esp32c3_i2c_reset_hold;
 }
 

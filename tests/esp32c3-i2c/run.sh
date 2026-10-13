@@ -41,10 +41,13 @@ trap 'rm -rf "$WORK"' EXIT
 [ -f "$WORK/i2ctest.elf" ] || { echo "FAIL: compile failed" >&2; exit 1; }
 
 # The test expects chips at 0x58 (reg 0x10 = 0x23) and 0x3a (reg 0x00 = 0x18),
-# and nothing at 0x08 or 0x5b so the NACK path is covered. No pads are pinned,
-# so pad gating stays out of the way.
-timeout 60 "$QEMU" -nographic -machine 'esp32c3,oro-i2c=58:10=23;3a:00=18' \
-    -kernel "$WORK/i2ctest.elf" > "$WORK/out.log" 2>&1 || true
+# and nothing at 0x08 or 0x5b so the NACK path is covered. No "i2c-pads", so
+# the board pad check stays out of the way -- the test pokes the controller
+# directly and never touches the GPIO matrix.
+timeout 60 "$QEMU" -nographic -machine esp32c3 -kernel "$WORK/i2ctest.elf" \
+    -device oro-i2c-dev,address=0x58,name=ioexp,regs=10=23 \
+    -device oro-i2c-dev,address=0x3a,name=leds,regs=00=18 \
+    > "$WORK/out.log" 2>&1 || true
 
 sed -n '/I2CTEST START/,/I2CTEST \(ALL OK\|FAILURES\)/p' "$WORK/out.log"
 

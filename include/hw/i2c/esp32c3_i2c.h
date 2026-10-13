@@ -34,14 +34,6 @@
 #define ESP32C3_I2CEXT0_SCL_IN_IDX  53
 #define ESP32C3_I2CEXT0_SDA_IN_IDX  54
 
-/*
- * Read-only integer properties holding the pad each line is currently routed
- * to, or -1 when unrouted. Slaves on the bus read these to decide whether
- * they are physically wired to the lines being driven.
- */
-#define ESP32C3_I2C_SCL_PAD_PROP    "scl-pad"
-#define ESP32C3_I2C_SDA_PAD_PROP    "sda-pad"
-
 typedef struct Esp32C3I2CState {
     SysBusDevice parent_obj;
 
@@ -67,6 +59,16 @@ typedef struct Esp32C3I2CState {
 
     /* GPIO device used to resolve which pads the controller is routed to */
     ESP32C3GPIOState *gpio;
+
+    /*
+     * The pads the simulated board's I2C bus is actually wired to, from the
+     * "i2c-pads" machine property; -1 disables the check. A real bus has one
+     * pad pair, so this belongs to the board rather than to each chip: when
+     * the guest routes the controller somewhere else, nothing on the bus can
+     * answer, and the address phase NACKs without the bus being consulted.
+     */
+    int32_t board_scl;
+    int32_t board_sda;
 
     uint32_t ctr_reg;
     uint32_t fifo_conf_reg;
