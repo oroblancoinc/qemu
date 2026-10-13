@@ -13,7 +13,7 @@
  * auto-increment, and reads return the register file with auto-increment.
  *
  * Instantiate one per simulated chip, e.g.
- *     -device 'oro-i2c-dev,address=0x58,name=aw9523b,regs=10=23;7f=00'
+ *     -device 'oro-i2c-chip,address=0x58,name=aw9523b,regs=10=23;7f=00'
  *
  * Which pads the bus is wired to is a property of the board, not of each
  * chip, so it lives on the machine ("i2c-pads") and is enforced by the
@@ -27,37 +27,37 @@
 #include "qemu/error-report.h"
 #include "qapi/error.h"
 #include "hw/i2c/i2c.h"
-#include "hw/misc/oro_i2c_dev.h"
+#include "hw/misc/oro_i2c_chip.h"
 #include "hw/qdev-properties.h"
 #include "migration/vmstate.h"
 
-OBJECT_DECLARE_SIMPLE_TYPE(OroI2CDevState, ORO_I2C_DEV)
+OBJECT_DECLARE_SIMPLE_TYPE(OroI2CChipState, ORO_I2C_CHIP)
 
-#define ORO_I2C_DEV_NREGS 256
+#define ORO_I2C_CHIP_NREGS 256
 
 /* Debug output */
-#define ORO_I2C_DEV_DEBUG 0
+#define ORO_I2C_CHIP_DEBUG 0
 
-struct OroI2CDevState {
+struct OroI2CChipState {
     I2CSlave parent_obj;
 
     /* Properties */
     char *name;
     char *regs_preset;
 
-    uint8_t regs[ORO_I2C_DEV_NREGS];
+    uint8_t regs[ORO_I2C_CHIP_NREGS];
     uint8_t ptr;
     bool expect_reg;
 };
 
-static const char *oro_i2c_dev_name(OroI2CDevState *s)
+static const char *oro_i2c_chip_name(OroI2CChipState *s)
 {
-    return s->name ? s->name : TYPE_ORO_I2C_DEV;
+    return s->name ? s->name : TYPE_ORO_I2C_CHIP;
 }
 
-static int oro_i2c_dev_event(I2CSlave *i2c, enum i2c_event event)
+static int oro_i2c_chip_event(I2CSlave *i2c, enum i2c_event event)
 {
-    OroI2CDevState *s = ORO_I2C_DEV(i2c);
+    OroI2CChipState *s = ORO_I2C_CHIP(i2c);
 
     switch (event) {
     case I2C_START_SEND:
@@ -82,37 +82,37 @@ static int oro_i2c_dev_event(I2CSlave *i2c, enum i2c_event event)
     return 0;
 }
 
-static uint8_t oro_i2c_dev_recv(I2CSlave *i2c)
+static uint8_t oro_i2c_chip_recv(I2CSlave *i2c)
 {
-    OroI2CDevState *s = ORO_I2C_DEV(i2c);
+    OroI2CChipState *s = ORO_I2C_CHIP(i2c);
     uint8_t value = s->regs[s->ptr];
 
-#if ORO_I2C_DEV_DEBUG
+#if ORO_I2C_CHIP_DEBUG
     info_report("[%s @0x%02x] READ reg 0x%02x = 0x%02x",
-                oro_i2c_dev_name(s), i2c->address, s->ptr, value);
+                oro_i2c_chip_name(s), i2c->address, s->ptr, value);
 #endif
 
     s->ptr++;
     return value;
 }
 
-static int oro_i2c_dev_send(I2CSlave *i2c, uint8_t data)
+static int oro_i2c_chip_send(I2CSlave *i2c, uint8_t data)
 {
-    OroI2CDevState *s = ORO_I2C_DEV(i2c);
+    OroI2CChipState *s = ORO_I2C_CHIP(i2c);
 
     if (s->expect_reg) {
         s->ptr = data;
         s->expect_reg = false;
-#if ORO_I2C_DEV_DEBUG
+#if ORO_I2C_CHIP_DEBUG
         info_report("[%s @0x%02x] SELECT reg 0x%02x",
-                    oro_i2c_dev_name(s), i2c->address, s->ptr);
+                    oro_i2c_chip_name(s), i2c->address, s->ptr);
 #endif
         return 0;
     }
 
-#if ORO_I2C_DEV_DEBUG
+#if ORO_I2C_CHIP_DEBUG
     info_report("[%s @0x%02x] WRITE reg 0x%02x = 0x%02x",
-                oro_i2c_dev_name(s), i2c->address, s->ptr, data);
+                oro_i2c_chip_name(s), i2c->address, s->ptr, data);
 #endif
 
     s->regs[s->ptr] = data;
@@ -125,7 +125,7 @@ static int oro_i2c_dev_send(I2CSlave *i2c, uint8_t data)
  * e.g. "10=23;00=18". Entries are separated by ';' because a comma is
  * -device's own option separator and never reaches this property.
  */
-static void oro_i2c_dev_parse_regs(OroI2CDevState *s, Error **errp)
+static void oro_i2c_chip_parse_regs(OroI2CChipState *s, Error **errp)
 {
     g_auto(GStrv) entries = NULL;
 
@@ -142,19 +142,19 @@ static void oro_i2c_dev_parse_regs(OroI2CDevState *s, Error **errp)
         if (g_strv_length(pair) != 2) {
             error_setg(errp, "%s: malformed regs entry '%s', "
                        "expected <index>=<value> entries separated by ';'",
-                       oro_i2c_dev_name(s), entries[i]);
+                       oro_i2c_chip_name(s), entries[i]);
             return;
         }
         if (qemu_strtou64(g_strstrip(pair[0]), NULL, 16, &index) < 0 ||
-            index >= ORO_I2C_DEV_NREGS) {
+            index >= ORO_I2C_CHIP_NREGS) {
             error_setg(errp, "%s: invalid regs index '%s'",
-                       oro_i2c_dev_name(s), pair[0]);
+                       oro_i2c_chip_name(s), pair[0]);
             return;
         }
         if (qemu_strtou64(g_strstrip(pair[1]), NULL, 16, &value) ||
             value > 0xff) {
             error_setg(errp, "%s: invalid regs value '%s'",
-                       oro_i2c_dev_name(s), pair[1]);
+                       oro_i2c_chip_name(s), pair[1]);
             return;
         }
 
@@ -162,67 +162,67 @@ static void oro_i2c_dev_parse_regs(OroI2CDevState *s, Error **errp)
     }
 }
 
-static void oro_i2c_dev_realize(DeviceState *dev, Error **errp)
+static void oro_i2c_chip_realize(DeviceState *dev, Error **errp)
 {
-    OroI2CDevState *s = ORO_I2C_DEV(dev);
+    OroI2CChipState *s = ORO_I2C_CHIP(dev);
 
-    oro_i2c_dev_parse_regs(s, errp);
+    oro_i2c_chip_parse_regs(s, errp);
 }
 
-static void oro_i2c_dev_reset_hold(Object *obj, ResetType type)
+static void oro_i2c_chip_reset_hold(Object *obj, ResetType type)
 {
-    OroI2CDevState *s = ORO_I2C_DEV(obj);
+    OroI2CChipState *s = ORO_I2C_CHIP(obj);
 
     s->ptr = 0;
     s->expect_reg = false;
 }
 
-static const VMStateDescription vmstate_oro_i2c_dev = {
-    .name = TYPE_ORO_I2C_DEV,
+static const VMStateDescription vmstate_oro_i2c_chip = {
+    .name = TYPE_ORO_I2C_CHIP,
     .version_id = 1,
     .minimum_version_id = 1,
     .fields = (const VMStateField[]) {
-        VMSTATE_I2C_SLAVE(parent_obj, OroI2CDevState),
-        VMSTATE_UINT8_ARRAY(regs, OroI2CDevState, ORO_I2C_DEV_NREGS),
-        VMSTATE_UINT8(ptr, OroI2CDevState),
-        VMSTATE_BOOL(expect_reg, OroI2CDevState),
+        VMSTATE_I2C_SLAVE(parent_obj, OroI2CChipState),
+        VMSTATE_UINT8_ARRAY(regs, OroI2CChipState, ORO_I2C_CHIP_NREGS),
+        VMSTATE_UINT8(ptr, OroI2CChipState),
+        VMSTATE_BOOL(expect_reg, OroI2CChipState),
         VMSTATE_END_OF_LIST()
     }
 };
 
-static Property oro_i2c_dev_properties[] = {
+static Property oro_i2c_chip_properties[] = {
     /* The "address" property comes from TYPE_I2C_SLAVE */
-    DEFINE_PROP_STRING("name", OroI2CDevState, name),
-    DEFINE_PROP_STRING("regs", OroI2CDevState, regs_preset),
+    DEFINE_PROP_STRING("name", OroI2CChipState, name),
+    DEFINE_PROP_STRING("regs", OroI2CChipState, regs_preset),
     DEFINE_PROP_END_OF_LIST()
 };
 
-static void oro_i2c_dev_class_init(ObjectClass *klass, void *data)
+static void oro_i2c_chip_class_init(ObjectClass *klass, void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     ResettableClass *rc = RESETTABLE_CLASS(klass);
     I2CSlaveClass *sc = I2C_SLAVE_CLASS(klass);
 
-    dc->realize = oro_i2c_dev_realize;
-    dc->vmsd = &vmstate_oro_i2c_dev;
-    device_class_set_props(dc, oro_i2c_dev_properties);
-    rc->phases.hold = oro_i2c_dev_reset_hold;
+    dc->realize = oro_i2c_chip_realize;
+    dc->vmsd = &vmstate_oro_i2c_chip;
+    device_class_set_props(dc, oro_i2c_chip_properties);
+    rc->phases.hold = oro_i2c_chip_reset_hold;
 
-    sc->event = oro_i2c_dev_event;
-    sc->recv = oro_i2c_dev_recv;
-    sc->send = oro_i2c_dev_send;
+    sc->event = oro_i2c_chip_event;
+    sc->recv = oro_i2c_chip_recv;
+    sc->send = oro_i2c_chip_send;
 }
 
-static const TypeInfo oro_i2c_dev_info = {
-    .name = TYPE_ORO_I2C_DEV,
+static const TypeInfo oro_i2c_chip_info = {
+    .name = TYPE_ORO_I2C_CHIP,
     .parent = TYPE_I2C_SLAVE,
-    .instance_size = sizeof(OroI2CDevState),
-    .class_init = oro_i2c_dev_class_init,
+    .instance_size = sizeof(OroI2CChipState),
+    .class_init = oro_i2c_chip_class_init,
 };
 
-static void oro_i2c_dev_register_types(void)
+static void oro_i2c_chip_register_types(void)
 {
-    type_register_static(&oro_i2c_dev_info);
+    type_register_static(&oro_i2c_chip_info);
 }
 
-type_init(oro_i2c_dev_register_types)
+type_init(oro_i2c_chip_register_types)

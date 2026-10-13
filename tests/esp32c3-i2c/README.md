@@ -1,6 +1,6 @@
 # ESP32-C3 I2C controller test
 
-Register-level test for `hw/i2c/esp32c3_i2c.c` and `hw/misc/oro_i2c_dev.c`.
+Register-level test for `hw/i2c/esp32c3_i2c.c` and `hw/misc/oro_i2c_chip.c`.
 
 ```sh
 tests/esp32c3-i2c/run.sh
