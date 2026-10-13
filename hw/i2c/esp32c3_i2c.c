@@ -31,8 +31,10 @@ static void esp32c3_i2c_reset_hold(Object *obj, ResetType type)
 
     fifo8_reset(&s->rx_fifo);
     fifo8_reset(&s->tx_fifo);
-    s->trans_ongoing = false;
+    s->transfer_open = false;
+    s->bus_busy = false;
     s->ctr_reg = 0;
+    s->fifo_conf_reg = 0;
     s->timeout_reg = 0;
     s->slave_addr_reg = 0;
     s->int_ena_reg = 0;
@@ -57,7 +59,7 @@ static void esp32c3_i2c_reset_hold(Object *obj, ResetType type)
 static uint32_t esp32c3_i2c_get_status_reg(Esp32C3I2CState *s)
 {
     uint32_t res = 0;
-    res = FIELD_DP32(res, I2C_STATUS, BUS_BUSY, s->trans_ongoing);
+    res = FIELD_DP32(res, I2C_STATUS, BUS_BUSY, s->bus_busy);
     res = FIELD_DP32(res, I2C_STATUS, RXFIFO_CNT, fifo8_num_used(&s->rx_fifo));
     res = FIELD_DP32(res, I2C_STATUS, TXFIFO_CNT, fifo8_num_used(&s->tx_fifo));
     return res;
@@ -78,6 +80,9 @@ static uint64_t esp32c3_i2c_read(void *opaque, hwaddr addr, unsigned int size)
         return s->ctr_reg;
     case A_I2C_STATUS:
         return esp32c3_i2c_get_status_reg(s);
+    case A_I2C_FIFO_CONF:
+        /* Read back, since the driver read-modify-writes the FIFO resets */
+        return s->fifo_conf_reg;
     case A_I2C_FIFO_DATA: {
         if (fifo8_num_used(&s->rx_fifo) == 0) {
             error_report("esp32c3_i2c: read I2C FIFO while it is empty");
@@ -128,6 +133,8 @@ static uint64_t esp32c3_i2c_read(void *opaque, hwaddr addr, unsigned int size)
     case A_I2C_DATE:
         return s->date_reg;
     default:
+        qemu_log_mask(LOG_UNIMP, "esp32c3_i2c: unimplemented read 0x%03"
+                      HWADDR_PRIx "\n", addr);
         return 0;
     }
 }
@@ -163,6 +170,9 @@ static void esp32c3_i2c_write(void *opaque, hwaddr addr, uint64_t value, unsigne
         if (FIELD_EX32(value, I2C_FIFO_CONF, TX_FIFO_RST)) {
             fifo8_reset(&s->tx_fifo);
         }
+        /* The two reset bits are write triggers, everything else persists */
+        s->fifo_conf_reg = value & ~(R_I2C_FIFO_CONF_RX_FIFO_RST_MASK |
+                                     R_I2C_FIFO_CONF_TX_FIFO_RST_MASK);
         break;
     case A_I2C_FIFO_DATA:
         if (fifo8_num_free(&s->tx_fifo) == 0) {
@@ -225,12 +235,21 @@ static void esp32c3_i2c_write(void *opaque, hwaddr addr, uint64_t value, unsigne
         s->scl_main_st_timeout_reg = value;
         break;
     case A_I2C_SCL_SP_CONF:
-        s->scl_sp_conf_reg = value;
+        /*
+         * SCL_RST_SLV_EN is "R/W/SC": the hardware clears it once the SCL
+         * pulses have been sent. s_i2c_master_clear_bus() spins until it
+         * reads back 0, and gives up with "clear bus failed." after 50ms --
+         * after which every later transaction fails with "reset hardware
+         * failed". Nothing to simulate, so retire it immediately.
+         */
+        s->scl_sp_conf_reg = value & ~R_I2C_SCL_SP_CONF_SCL_RST_SLV_EN_MASK;
         break;
     case A_I2C_DATE:
         s->date_reg = value;
         break;
     default:
+        qemu_log_mask(LOG_UNIMP, "esp32c3_i2c: unimplemented write 0x%03"
+                      HWADDR_PRIx " = 0x%08" PRIx64 "\n", addr, value);
         break;
     }
 }
@@ -239,19 +258,22 @@ static void esp32c3_i2c_do_transaction(Esp32C3I2CState *s)
 {
     bool stop_or_end = false;
 
+    /* The command FSM is running; STOP, END and a NACK each make it idle */
+    s->bus_busy = true;
+
     for (int i_cmd = 0; i_cmd < ESP32C3_I2C_CMD_COUNT && !stop_or_end; ++i_cmd) {
         uint32_t cmd = s->cmd_reg[i_cmd];
         uint32_t opcode = FIELD_EX32(cmd, I2C_CMD, OPCODE);
 
         switch (opcode) {
-        case I2C_OPCODE_RSTART:
+        case ESP32C3_I2C_OPCODE_RSTART:
             i2c_end_transfer(s->bus);
-            s->trans_ongoing = false;
+            s->transfer_open = false;
             break;
-        case I2C_OPCODE_WRITE: {
+        case ESP32C3_I2C_OPCODE_WRITE: {
             size_t length = FIELD_EX32(cmd, I2C_CMD, BYTE_NUM);
-            if (!s->trans_ongoing) {
-                s->trans_ongoing = true;
+            if (!s->transfer_open) {
+                s->transfer_open = true;
                 uint8_t data = fifo8_pop(&s->tx_fifo);
                 uint8_t addr = data >> 1;
                 uint8_t is_read = data & 0x1;
@@ -262,7 +284,8 @@ static void esp32c3_i2c_do_transaction(Esp32C3I2CState *s)
                         s->int_raw_reg = FIELD_DP32(s->int_raw_reg, I2C_INT_RAW, NACK, 1);
                         stop_or_end = true;
                     }
-                    s->trans_ongoing = false;
+                    s->transfer_open = false;
+                    s->bus_busy = false;
                     break;
                 }
                 s->int_raw_reg = FIELD_DP32(s->int_raw_reg, I2C_INT_RAW, NACK, 0);
@@ -274,7 +297,7 @@ static void esp32c3_i2c_do_transaction(Esp32C3I2CState *s)
             }
             break;
         }
-        case I2C_OPCODE_READ: {
+        case ESP32C3_I2C_OPCODE_READ: {
             size_t length = FIELD_EX32(cmd, I2C_CMD, BYTE_NUM);
             for (size_t nbytes = 0; nbytes < length; ++nbytes) {
                 if (fifo8_num_free(&s->rx_fifo) == 0) {
@@ -285,17 +308,22 @@ static void esp32c3_i2c_do_transaction(Esp32C3I2CState *s)
             }
             break;
         }
-        case I2C_OPCODE_STOP:
+        case ESP32C3_I2C_OPCODE_STOP:
             i2c_end_transfer(s->bus);
-            s->trans_ongoing = false;
+            s->transfer_open = false;
+            s->bus_busy = false;
             s->int_raw_reg = FIELD_DP32(s->int_raw_reg, I2C_INT_RAW, TRANS_COMPLETE, 1);
             stop_or_end = true;
             break;
-        case I2C_OPCODE_END:
+        case ESP32C3_I2C_OPCODE_END:
             /*
-             * END pauses the command list without releasing the bus, the
-             * driver refills the command registers and starts again.
+             * END pauses the command list without releasing the bus: the
+             * transfer stays open and the driver refills the command
+             * registers. The command FSM is idle in that gap though, so
+             * BUS_BUSY must read back 0 -- the driver spins on it with no
+             * timeout before writing the next batch of commands.
              */
+            s->bus_busy = false;
             s->int_raw_reg = FIELD_DP32(s->int_raw_reg, I2C_INT_RAW, END_DETECT, 1);
             stop_or_end = true;
             break;
@@ -304,6 +332,15 @@ static void esp32c3_i2c_do_transaction(Esp32C3I2CState *s)
             break;
         }
         s->cmd_reg[i_cmd] = FIELD_DP32(s->cmd_reg[i_cmd], I2C_CMD, DONE, 1);
+    }
+
+    if (!stop_or_end) {
+        /*
+         * Ran off the end of the command list without a STOP or END. Real
+         * firmware always terminates the list, but leaving BUS_BUSY asserted
+         * here would wedge the guest in an untimed spin.
+         */
+        s->bus_busy = false;
     }
     esp32c3_i2c_update_irq(s);
 }

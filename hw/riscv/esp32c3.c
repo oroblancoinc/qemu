@@ -12,6 +12,7 @@
 #include "qemu/error-report.h"
 #include "hw/qdev-properties.h"
 #include "qemu/units.h"
+#include "qemu/cutils.h"
 #include "qemu/datadir.h"
 #include "qapi/error.h"
 #include "hw/hw.h"
@@ -52,6 +53,7 @@
 #include "hw/dma/esp32c3_gdma.h"
 #include "hw/audio/esp32c3_i2s.h"
 #include "hw/i2c/esp32c3_i2c.h"
+#include "hw/misc/oro_i2c_dev.h"
 #include "hw/display/esp_rgb.h"
 #include "hw/net/can/esp32c3_twai.h"
 
@@ -97,6 +99,9 @@ struct Esp32C3MachineState {
     Esp32C3TWAIState twai;
     Esp32C3I2SState i2s0;
     Esp32C3I2CState i2c0;
+
+    /* "oro-i2c" machine property: I2C slaves to put on i2c0 */
+    char *oro_i2c;
 
     /* SD card ssi-sd device for GPIO CS routing */
     DeviceState *sd_ssi_dev;
@@ -336,6 +341,69 @@ static void esp32c3_load_firmware(MachineState *machine)
     }
 }
 
+
+/*
+ * Populate i2c0 from the "oro-i2c" machine property, an alternative to
+ * assembling one -device argument per chip. The grammar is
+ *
+ *     <addr>[:<reg>=<val>[+<reg>=<val>]...][@<scl>/<sda>][;<next chip>]...
+ *
+ * all values hexadecimal except the pad numbers, e.g.
+ *
+ *     -machine esp32c3,oro-i2c='58:10=23+7f=00@7/6;3a:00=18;08'
+ *
+ * A comma cannot appear because that is -machine's own option separator,
+ * hence '+' between register pairs and ';' between chips.
+ */
+static void esp32c3_create_oro_i2c_devs(Esp32C3MachineState *ms)
+{
+    g_auto(GStrv) specs = NULL;
+
+    if (ms->oro_i2c == NULL || ms->oro_i2c[0] == '\0') {
+        return;
+    }
+
+    specs = g_strsplit(ms->oro_i2c, ";", -1);
+    for (int i = 0; specs[i] != NULL; i++) {
+        g_autofree char *spec = g_strdup(g_strstrip(specs[i]));
+        char *pads = strchr(spec, '@');
+        char *regs = strchr(spec, ':');
+        int scl = -1;
+        int sda = -1;
+        uint64_t addr;
+        I2CSlave *slave;
+
+        if (spec[0] == '\0') {
+            continue;
+        }
+        /* Split off the optional trailing @<scl>/<sda> first */
+        if (pads != NULL) {
+            *pads++ = '\0';
+            if (sscanf(pads, "%d/%d", &scl, &sda) != 2) {
+                error_report("oro-i2c: malformed pads '@%s', expected @<scl>/<sda>",
+                             pads);
+                exit(1);
+            }
+        }
+        if (regs != NULL) {
+            *regs++ = '\0';
+        }
+        if (qemu_strtou64(spec, NULL, 16, &addr) < 0 || addr > 0x7f) {
+            error_report("oro-i2c: invalid 7-bit address '%s'", spec);
+            exit(1);
+        }
+
+        slave = i2c_slave_new(TYPE_ORO_I2C_DEV, addr);
+        if (regs != NULL) {
+            /* oro-i2c-dev separates register pairs with ';' */
+            g_autofree char *translated = g_strdelimit(g_strdup(regs), "+", ';');
+            qdev_prop_set_string(DEVICE(slave), "regs", translated);
+        }
+        qdev_prop_set_int32(DEVICE(slave), "scl", scl);
+        qdev_prop_set_int32(DEVICE(slave), "sda", sda);
+        i2c_slave_realize_and_unref(slave, ms->i2c0.bus, &error_fatal);
+    }
+}
 
 static void esp32c3_machine_init(MachineState *machine)
 {
@@ -680,6 +748,7 @@ static void esp32c3_machine_init(MachineState *machine)
         memory_region_add_subregion_overlap(sys_mem, DR_REG_I2C_EXT_BASE, mr, 0);
         sysbus_connect_irq(SYS_BUS_DEVICE(&ms->i2c0), 0,
                            qdev_get_gpio_in(intmatrix_dev, ETS_I2C_EXT0_INTR_SOURCE));
+        esp32c3_create_oro_i2c_devs(ms);
     }
 
     /* SHA realization */
@@ -759,6 +828,22 @@ static void esp32c3_machine_init(MachineState *machine)
 
 
 /* Initialize machine type */
+static char *esp32c3_machine_get_oro_i2c(Object *obj, Error **errp)
+{
+    Esp32C3MachineState *ms = ESP32C3_MACHINE(obj);
+
+    return g_strdup(ms->oro_i2c);
+}
+
+static void esp32c3_machine_set_oro_i2c(Object *obj, const char *value,
+                                        Error **errp)
+{
+    Esp32C3MachineState *ms = ESP32C3_MACHINE(obj);
+
+    g_free(ms->oro_i2c);
+    ms->oro_i2c = g_strdup(value);
+}
+
 static void esp32c3_machine_class_init(ObjectClass *oc, void *data)
 {
     MachineClass *mc = MACHINE_CLASS(oc);
@@ -776,6 +861,12 @@ static void esp32c3_machine_class_init(ObjectClass *oc, void *data)
     mc->no_cdrom = true;
     mc->no_parallel = true;
     mc->no_sdcard = true;  /* Disable default SD card - user must specify via -drive if=sd */
+
+    object_class_property_add_str(oc, "oro-i2c",
+                                  esp32c3_machine_get_oro_i2c,
+                                  esp32c3_machine_set_oro_i2c);
+    object_class_property_set_description(oc, "oro-i2c",
+        "I2C slaves on i2c0: <addr>[:<reg>=<val>[+...]][@<scl>/<sda>][;...]");
 }
 
 /* Create a new type of machine ("child class") */

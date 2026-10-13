@@ -50,12 +50,26 @@ typedef struct Esp32C3I2CState {
     I2CBus *bus;
     Fifo8 rx_fifo;
     Fifo8 tx_fifo;
-    bool trans_ongoing;
+    /*
+     * An I2C transfer is open on the bus: the address phase has been done, so
+     * a WRITE command carries data rather than an address. An END command
+     * pauses the command list without closing the transfer, so this survives
+     * it; only RSTART, STOP and a NACK clear it.
+     */
+    bool transfer_open;
+    /*
+     * What SR.BUS_BUSY reports. Unlike transfer_open this IS cleared by END,
+     * because the command FSM goes idle there waiting for the next
+     * TRANS_START, and IDF spins on BUS_BUSY in that gap -- without a
+     * timeout, in interrupt context (i2c_master.c s_i2c_send_command_async).
+     */
+    bool bus_busy;
 
     /* GPIO device used to resolve which pads the controller is routed to */
     ESP32C3GPIOState *gpio;
 
     uint32_t ctr_reg;
+    uint32_t fifo_conf_reg;
     uint32_t timeout_reg;
     uint32_t slave_addr_reg;
     uint32_t int_ena_reg;
@@ -139,20 +153,25 @@ REG32(I2C_CMD, 0x58);
 REG32(I2C_SCL_ST_TIME_OUT, 0x78);
 REG32(I2C_SCL_MAIN_ST_TIME_OUT, 0x7c);
 REG32(I2C_SCL_SP_CONF, 0x80);
+    /* "R/W/SC": the hardware clears this once the SCL pulses are sent */
+    FIELD(I2C_SCL_SP_CONF, SCL_RST_SLV_EN, 0, 1);
+
 REG32(I2C_DATE, 0xf8);
 
 /*
- * I2C_CMD.OPCODE values. These differ from the original ESP32 (which uses
- * RSTART=0, WRITE=1, READ=2, STOP=3, END=4); see
- * components/hal/esp32c3/include/hal/i2c_ll.h. Getting these wrong
- * mis-decodes the command list silently.
+ * I2C_CMD.OPCODE values, from components/hal/esp32c3/include/hal/i2c_ll.h.
+ * These differ from the original ESP32, which uses RSTART=0, WRITE=1, READ=2,
+ * STOP=3, END=4 -- note READ and STOP are SWAPPED. The symbols are
+ * deliberately prefixed so they cannot be confused with the esp32 model's
+ * i2c_opcode_t, where the same names carry different values and a mix-up
+ * would silently turn a STOP into a READ.
  */
 typedef enum {
-    I2C_OPCODE_WRITE   = 1,
-    I2C_OPCODE_STOP    = 2,
-    I2C_OPCODE_READ    = 3,
-    I2C_OPCODE_END     = 4,
-    I2C_OPCODE_RSTART  = 6,
+    ESP32C3_I2C_OPCODE_WRITE   = 1,
+    ESP32C3_I2C_OPCODE_STOP    = 2,
+    ESP32C3_I2C_OPCODE_READ    = 3,
+    ESP32C3_I2C_OPCODE_END     = 4,
+    ESP32C3_I2C_OPCODE_RSTART  = 6,
 } esp32c3_i2c_opcode_t;
 
 #endif /* ESP32C3_I2C_H */

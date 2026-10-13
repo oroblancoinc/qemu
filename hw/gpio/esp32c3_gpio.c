@@ -31,6 +31,9 @@
 #define GPIO_FUNC_IN_SEL_CFG_FIRST  0x154
 #define GPIO_FUNC_IN_SEL_CFG_LAST   \
     (GPIO_FUNC_IN_SEL_CFG_FIRST + (ESP32C3_GPIO_SIG_COUNT - 1) * 4)
+#define GPIO_FUNC_OUT_SEL_CFG_FIRST 0x554
+#define GPIO_FUNC_OUT_SEL_CFG_LAST  \
+    (GPIO_FUNC_OUT_SEL_CFG_FIRST + (ESP32C3_GPIO_COUNT - 1) * 4)
 
 /*
  * GPIO_FUNCn_IN_SEL_CFG: IN_SEL is [4:0], IN_INV_SEL is bit 5 and SIG_IN_SEL
@@ -41,6 +44,9 @@
 #define GPIO_FUNC_IN_SEL_MASK   0x1f
 #define GPIO_FUNC_SIG_IN_SEL    (1 << 6)
 
+/* GPIO_FUNC<pad>_OUT_SEL_CFG.OUT_SEL, the signal driving that pad */
+#define GPIO_FUNC_OUT_SEL_MASK  0xff
+
 /* Debug output */
 #define GPIO_DEBUG 0
 
@@ -50,16 +56,31 @@ int esp32c3_gpio_signal_pad(ESP32C3GPIOState *s, unsigned sig)
         return -1;
     }
 
+    /* Direct lookup: the in-sel table is indexed by signal */
     uint32_t cfg = s->func_in_sel_cfg[sig];
 
-    if (!(cfg & GPIO_FUNC_SIG_IN_SEL)) {
-        /* Signal is not routed through the matrix */
-        return -1;
+    if ((cfg & GPIO_FUNC_SIG_IN_SEL) &&
+        (cfg & GPIO_FUNC_IN_SEL_MASK) < ESP32C3_GPIO_COUNT) {
+        return cfg & GPIO_FUNC_IN_SEL_MASK;
     }
-    if ((cfg & GPIO_FUNC_IN_SEL_MASK) >= ESP32C3_GPIO_COUNT) {
-        return -1;
+
+    /*
+     * Fall back to the out-sel table, which is indexed by pad and so needs a
+     * scan. s_hp_i2c_pins_config() writes both directions, but a peripheral
+     * configured for output only would appear here alone.
+     */
+    for (unsigned pad = 0; pad < ESP32C3_GPIO_COUNT; pad++) {
+        if ((s->func_out_sel_cfg[pad] & GPIO_FUNC_OUT_SEL_MASK) == sig) {
+            return pad;
+        }
     }
-    return cfg & GPIO_FUNC_IN_SEL_MASK;
+
+    /*
+     * Unrouted. i2c_common_deinit_pins() resets the in-sel entry to
+     * GPIO_MATRIX_CONST_ZERO_INPUT, so this is also what a closed bus handle
+     * looks like.
+     */
+    return -1;
 }
 
 static void esp32c3_gpio_update_outputs(ESP32C3GPIOState *s, uint32_t old_out)
@@ -99,6 +120,9 @@ static uint64_t esp32c3_gpio_read(void *opaque, hwaddr addr, unsigned int size)
         break;
     case GPIO_FUNC_IN_SEL_CFG_FIRST ... GPIO_FUNC_IN_SEL_CFG_LAST:
         r = s->func_in_sel_cfg[(addr - GPIO_FUNC_IN_SEL_CFG_FIRST) / 4];
+        break;
+    case GPIO_FUNC_OUT_SEL_CFG_FIRST ... GPIO_FUNC_OUT_SEL_CFG_LAST:
+        r = s->func_out_sel_cfg[(addr - GPIO_FUNC_OUT_SEL_CFG_FIRST) / 4];
         break;
     default:
         /* Many other GPIO registers exist; return 0 for now */
@@ -153,6 +177,9 @@ static void esp32c3_gpio_write(void *opaque, hwaddr addr,
          */
         s->func_in_sel_cfg[(addr - GPIO_FUNC_IN_SEL_CFG_FIRST) / 4] = value;
         break;
+    case GPIO_FUNC_OUT_SEL_CFG_FIRST ... GPIO_FUNC_OUT_SEL_CFG_LAST:
+        s->func_out_sel_cfg[(addr - GPIO_FUNC_OUT_SEL_CFG_FIRST) / 4] = value;
+        break;
     default:
         /* Many other GPIO registers exist; ignore for now */
         break;
@@ -172,6 +199,10 @@ static void esp32c3_gpio_reset_hold(Object *obj, ResetType type)
     s->gpio_out = 0;
     s->gpio_enable = 0;
     memset(s->func_in_sel_cfg, 0, sizeof(s->func_in_sel_cfg));
+    for (int i = 0; i < ESP32C3_GPIO_COUNT; i++) {
+        /* Reset default is SIG_GPIO_OUT_IDX: driven by GPIO, not a signal */
+        s->func_out_sel_cfg[i] = 0x80;
+    }
 
     /* Notify all outputs are now low */
     for (int i = 0; i < ESP32C3_GPIO_COUNT; i++) {

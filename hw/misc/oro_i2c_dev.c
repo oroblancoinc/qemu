@@ -27,10 +27,10 @@
 #include "qemu/error-report.h"
 #include "qapi/error.h"
 #include "hw/i2c/i2c.h"
+#include "hw/misc/oro_i2c_dev.h"
 #include "hw/qdev-properties.h"
 #include "migration/vmstate.h"
 
-#define TYPE_ORO_I2C_DEV "oro-i2c-dev"
 OBJECT_DECLARE_SIMPLE_TYPE(OroI2CDevState, ORO_I2C_DEV)
 
 #define ORO_I2C_DEV_NREGS 256

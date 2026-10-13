@@ -34,6 +34,9 @@ typedef struct ESP32C3GPIOState {
     /* GPIO_FUNCn_IN_SEL_CFG: which pad each peripheral input signal reads */
     uint32_t func_in_sel_cfg[ESP32C3_GPIO_SIG_COUNT];
 
+    /* GPIO_FUNCn_OUT_SEL_CFG: which signal drives each pad */
+    uint32_t func_out_sel_cfg[ESP32C3_GPIO_COUNT];
+
     /* Output IRQs - one per GPIO pin */
     qemu_irq gpio_out_irq[ESP32C3_GPIO_COUNT];
 } ESP32C3GPIOState;
